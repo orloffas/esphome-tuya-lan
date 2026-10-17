@@ -1,0 +1,12 @@
+# ESPHome build output and local secrets
+.esphome/
+secrets.yaml
+
+# Host-side tests and tools
+__pycache__/
+.venv/
+build/
+
+# Agent state
+.omc/
+.DS_Store
