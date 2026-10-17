@@ -76,7 +76,7 @@ switch:
 
 sensor:
   - platform: tuya_lan
-    name: "Mats power"
+    name: "Mats power draw"
     tuya_lan_id: mats
     datapoint: 19
     unit_of_measurement: W
@@ -229,12 +229,14 @@ tuya_lan:
 
 switch:
   - platform: tuya_lan
+    id: mats_power
     name: "Маты, питание"
     tuya_lan_id: mats
     datapoint: 1
 
 sensor:
   - platform: tuya_lan
+    id: mats_power_draw
     name: "Маты, мощность"
     tuya_lan_id: mats
     datapoint: 19
@@ -245,6 +247,7 @@ sensor:
 
 binary_sensor:
   - platform: tuya_lan
+    id: mats_online
     name: "Маты на связи"
     tuya_lan_id: mats
 ```

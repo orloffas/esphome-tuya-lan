@@ -70,7 +70,7 @@ sensor:
     filters:
       - multiply: 0.001 # raw is milliamps
   - platform: tuya_lan
-    name: "Mats power"
+    name: "Mats power draw"
     tuya_lan_id: mats
     datapoint: 19
     unit_of_measurement: W
@@ -99,7 +99,7 @@ sensor:
     filters:
       - multiply: 0.001
   - platform: tuya_lan
-    name: "IR heater power"
+    name: "IR heater power draw"
     tuya_lan_id: ir_heater
     datapoint: 19
     unit_of_measurement: W

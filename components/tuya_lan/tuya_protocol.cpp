@@ -354,11 +354,15 @@ DecodedFrame Codec::decode(const Bytes &data) {
       Bytes vh = version_header(version_);
       if (raw.size() >= 15 && std::memcmp(raw.data(), vh.data(), 3) == 0)
         raw.erase(raw.begin(), raw.begin() + 15);
-      plain = aes_ecb_decrypt(key_, raw, /*unpad=*/true);
-      // 3.3 has no keyed authentication (CRC only), so a wrong local_key passes
-      // the CRC and only shows up as a decrypt that yields nothing usable.
-      if (plain.empty())
-        return f;
+      if (!raw.empty()) {
+        plain = aes_ecb_decrypt(key_, raw, /*unpad=*/true);
+        // 3.3 has no keyed authentication (CRC only), so a wrong local_key passes
+        // the CRC and only shows up as a decrypt of non-empty ciphertext that
+        // yields nothing usable. An empty raw (a heartbeat or CONTROL ack that is
+        // only the retcode) is a valid empty-payload frame, not a bad key.
+        if (plain.empty())
+          return f;
+      }
     }
     f.payload.assign(plain.begin(), plain.end());
     f.ok = true;
