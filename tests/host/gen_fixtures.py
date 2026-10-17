@@ -29,9 +29,10 @@ from tinytuya.core import command_types as CT  # noqa: E402
 from tinytuya.core import header as H  # noqa: E402
 
 KEY = b"0123456789abKKKK"          # 16-byte device local_key
-LOCAL_NONCE = b"0123456789abcdef"   # 16-byte client nonce
+LOCAL_NONCE = b"nonce-abcdef-456"   # 16-byte client nonce (distinct from GCM_IV
+                                    # on purpose: the frame IV must not be the nonce)
 REMOTE_NONCE = b"fedcba9876543210"  # 16-byte device nonce
-GCM_IV = b"0123456789ab"            # 12-byte fixed nonce (debug mode)
+GCM_IV = b"0123456789ab"            # 12-byte fixed frame nonce (tinytuya debug mode)
 T = 1700000000                      # fixed timestamp
 DEV_ID = "bfabcd1234567890abcdef"
 

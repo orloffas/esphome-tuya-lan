@@ -12,9 +12,9 @@
 #include <string>
 #include <vector>
 
-using tuya_lan::proto::Bytes;
-using tuya_lan::proto::Codec;
-using tuya_lan::proto::Version;
+using esphome::tuya_lan::proto::Bytes;
+using esphome::tuya_lan::proto::Codec;
+using esphome::tuya_lan::proto::Version;
 
 static int g_pass = 0, g_fail = 0;
 
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
 
     if (op == "crc32") {
       Bytes d = unhex(r["data"]);
-      uint32_t got = tuya_lan::proto::crc32(d.data(), d.size());
+      uint32_t got = esphome::tuya_lan::proto::crc32(d.data(), d.size());
       uint32_t want = std::stoul(r["expect_crc"], nullptr, 0);
       check(name, std::to_string(got), std::to_string(want));
       continue;
@@ -99,15 +99,21 @@ int main(int argc, char **argv) {
 
     } else if (op == "session_step1") {
       Bytes nonce = unhex(r["local_nonce"]);
-      Bytes frame = codec.session_step1(std::stoul(r["seqno"]), nonce.data());
+      Bytes iv;
+      const uint8_t *ivp = nullptr;
+      if (r.count("iv")) { iv = unhex(r["iv"]); ivp = iv.data(); }
+      Bytes frame = codec.session_step1(std::stoul(r["seqno"]), nonce.data(), ivp);
       check(name, hex(frame), r["expect"]);
 
     } else if (op == "session_finish") {
       Bytes nonce = unhex(r["local_nonce"]);
-      codec.session_step1(1, nonce.data());  // establish local nonce
+      Bytes iv;
+      const uint8_t *ivp = nullptr;
+      if (r.count("iv")) { iv = unhex(r["iv"]); ivp = iv.data(); }
+      codec.session_step1(1, nonce.data(), ivp);  // establish local nonce
       Bytes resp = unhex(r["resp_payload"]);
       std::string resp_s(resp.begin(), resp.end());
-      Bytes frame = codec.session_step3(resp_s, std::stoul(r["seqno"]));
+      Bytes frame = codec.session_step3(resp_s, std::stoul(r["seqno"]), ivp);
       check(name, hex(frame), r["expect"]);
       // session key derivation
       bool ok = codec.finalize_session();

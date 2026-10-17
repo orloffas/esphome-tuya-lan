@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+namespace esphome {
 namespace tuya_lan {
 namespace proto {
 
@@ -90,12 +91,17 @@ class Codec {
 
   // --- 3.4 / 3.5 session key negotiation -------------------------------------
   // Step 1: frame to send (SESS_KEY_NEG_START) carrying our 16-byte local nonce.
-  // The nonce is stored for later derivation. Pass a fixed nonce for tests.
-  Bytes session_step1(uint32_t seqno, const uint8_t *local_nonce16 = nullptr);
+  // The nonce is stored for later key derivation. `gcm_iv` is the per-frame GCM
+  // nonce for 3.5 (independent of the local nonce — reusing the local nonce as
+  // the IV would repeat it in the finish frame and break GCM); null picks a
+  // random one. Both args take fixed values in tests.
+  Bytes session_step1(uint32_t seqno, const uint8_t *local_nonce16 = nullptr,
+                      const uint8_t *gcm_iv = nullptr);
   // Step 3: given the decoded SESS_KEY_NEG_RESP payload (48+ bytes, already
   // decrypted by decode()), verify the HMAC and build the SESS_KEY_NEG_FINISH
-  // frame. Returns empty on HMAC mismatch.
-  Bytes session_step3(const std::string &resp_payload, uint32_t seqno);
+  // frame. `gcm_iv` as in session_step1(). Returns empty on HMAC mismatch.
+  Bytes session_step3(const std::string &resp_payload, uint32_t seqno,
+                      const uint8_t *gcm_iv = nullptr);
   // Finalize: derive and install the session key from the two nonces. Call
   // after step 3 has been sent. Returns false if nonces are not set.
   bool finalize_session();
@@ -116,3 +122,4 @@ class Codec {
 
 }  // namespace proto
 }  // namespace tuya_lan
+}  // namespace esphome

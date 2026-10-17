@@ -1,11 +1,13 @@
 #include "tuya_protocol.h"
 
+#include <cstdlib>
 #include <cstring>
 
 #include <mbedtls/aes.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/md.h>
 
+namespace esphome {
 namespace tuya_lan {
 namespace proto {
 
@@ -335,26 +337,22 @@ DecodedFrame Codec::decode(const Bytes &data) {
 
 // --- Session key negotiation (3.4 / 3.5) -----------------------------------
 
-Bytes Codec::session_step1(uint32_t seqno, const uint8_t *local_nonce16) {
+Bytes Codec::session_step1(uint32_t seqno, const uint8_t *local_nonce16, const uint8_t *gcm_iv) {
   if (local_nonce16 != nullptr) {
     std::memcpy(local_nonce_, local_nonce16, 16);
   } else {
     for (int i = 0; i < 16; i++)
-      local_nonce_[i] = static_cast<uint8_t>(rand());  // NOLINT: seeded by component
+      local_nonce_[i] = static_cast<uint8_t>(rand());  // NOLINT: component injects HW RNG
   }
   have_local_nonce_ = true;
   have_remote_nonce_ = false;
   std::memcpy(key_, real_key_, 16);  // negotiation uses the real local key
 
   std::string nonce(reinterpret_cast<char *>(local_nonce_), 16);
-  // For 3.5 a GCM IV is needed; reuse the local nonce head (test determinism is
-  // provided via the dedicated encode() path; here a fresh nonce was just made).
-  if (version_ == Version::V35)
-    return encode(CMD_SESS_KEY_NEG_START, nonce, seqno, local_nonce_);
-  return encode(CMD_SESS_KEY_NEG_START, nonce, seqno);
+  return encode(CMD_SESS_KEY_NEG_START, nonce, seqno, gcm_iv);
 }
 
-Bytes Codec::session_step3(const std::string &resp_payload, uint32_t seqno) {
+Bytes Codec::session_step3(const std::string &resp_payload, uint32_t seqno, const uint8_t *gcm_iv) {
   if (resp_payload.size() < 48 || !have_local_nonce_)
     return {};
   const uint8_t *p = reinterpret_cast<const uint8_t *>(resp_payload.data());
@@ -369,12 +367,7 @@ Bytes Codec::session_step3(const std::string &resp_payload, uint32_t seqno) {
   uint8_t rkey_hmac[32];
   hmac_sha256(real_key_, 16, remote_nonce_, 16, rkey_hmac);
   std::string finish(reinterpret_cast<char *>(rkey_hmac), 32);
-  if (version_ == Version::V35) {
-    uint8_t iv[12];
-    std::memcpy(iv, local_nonce_, 12);
-    return encode(CMD_SESS_KEY_NEG_FINISH, finish, seqno, iv);
-  }
-  return encode(CMD_SESS_KEY_NEG_FINISH, finish, seqno);
+  return encode(CMD_SESS_KEY_NEG_FINISH, finish, seqno, gcm_iv);
 }
 
 bool Codec::finalize_session() {
@@ -413,3 +406,4 @@ bool Codec::finalize_session() {
 
 }  // namespace proto
 }  // namespace tuya_lan
+}  // namespace esphome
