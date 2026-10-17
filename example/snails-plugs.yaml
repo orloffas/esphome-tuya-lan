@@ -1,0 +1,126 @@
+# Example: two Tuya Wi-Fi plugs controlled over the LAN, no cloud, no Home
+# Assistant in the control path. Modelled on the snail-terrarium heating setup.
+#
+# Secrets (addresses, device ids, local keys) live in secrets.yaml and must
+# never be committed. See secrets.yaml.example.
+substitutions:
+  name: snails-plugs
+
+esphome:
+  name: ${name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+  # Do not log at VERY_VERBOSE in production: frames carry no secrets, but the
+  # device id appears in command payloads.
+  level: INFO
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+api:
+ota:
+  - platform: esphome
+
+# Pull the component straight from GitHub. For local development against this
+# repo, swap the source for:  { type: local, path: components }
+external_components:
+  - source:
+      type: git
+      url: https://github.com/orloffas/esphome-tuya-lan
+    components: [tuya_lan]
+
+# --- Plug 1: heating mats, protocol 3.5, with energy metering ---------------
+tuya_lan:
+  - id: mats
+    host: !secret mats_host
+    device_id: !secret mats_id
+    local_key: !secret mats_key
+    version: "3.5"
+  # --- Plug 2: IR heater, protocol 3.3, switch only ---
+  - id: ir_heater
+    host: !secret ir_host
+    device_id: !secret ir_id
+    local_key: !secret ir_key
+    version: "3.3"
+
+switch:
+  - platform: tuya_lan
+    name: "Mats power"
+    tuya_lan_id: mats
+    datapoint: 1
+  - platform: tuya_lan
+    name: "IR heater power"
+    tuya_lan_id: ir_heater
+    datapoint: 1
+
+sensor:
+  - platform: tuya_lan
+    name: "Mats current"
+    tuya_lan_id: mats
+    datapoint: 18
+    unit_of_measurement: A
+    device_class: current
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001 # raw is milliamps
+  - platform: tuya_lan
+    name: "Mats power"
+    tuya_lan_id: mats
+    datapoint: 19
+    unit_of_measurement: W
+    device_class: power
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1 # raw is deciwatts
+  - platform: tuya_lan
+    name: "Mats voltage"
+    tuya_lan_id: mats
+    datapoint: 20
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1 # raw is decivolts
+  # The IR heater plug (3.3) also reports energy on the same DPs. Metering it
+  # lets you catch a stuck relay: commanded off, but still drawing power.
+  - platform: tuya_lan
+    name: "IR heater current"
+    tuya_lan_id: ir_heater
+    datapoint: 18
+    unit_of_measurement: A
+    device_class: current
+    accuracy_decimals: 3
+    filters:
+      - multiply: 0.001
+  - platform: tuya_lan
+    name: "IR heater power"
+    tuya_lan_id: ir_heater
+    datapoint: 19
+    unit_of_measurement: W
+    device_class: power
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+  - platform: tuya_lan
+    name: "IR heater voltage"
+    tuya_lan_id: ir_heater
+    datapoint: 20
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+binary_sensor:
+  - platform: tuya_lan
+    name: "Mats online"
+    tuya_lan_id: mats
+  - platform: tuya_lan
+    name: "IR heater online"
+    tuya_lan_id: ir_heater

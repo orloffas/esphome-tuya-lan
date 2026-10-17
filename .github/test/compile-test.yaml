@@ -1,0 +1,58 @@
+# CI compile target: builds the component from this checkout (local source) so
+# every platform and both frame formats (3.3 55AA + 3.5 6699 GCM) are exercised.
+# Not a user example — see example/snails-plugs.yaml for that.
+esphome:
+  name: tuya-lan-citest
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+wifi:
+  ssid: "citest"
+  password: "citestpassword"
+
+external_components:
+  - source:
+      type: local
+      path: ../../components
+    components: [tuya_lan]
+
+tuya_lan:
+  - id: plug_v35
+    host: "10.0.0.11"
+    device_id: "bf00000000000000000000"
+    local_key: "0123456789abcdef"
+    version: "3.5"
+  - id: plug_v33
+    host: "10.0.0.12"
+    device_id: "bf11111111111111111111"
+    local_key: "fedcba9876543210"
+    version: "3.3"
+
+switch:
+  - platform: tuya_lan
+    name: "V35 power"
+    tuya_lan_id: plug_v35
+    datapoint: 1
+  - platform: tuya_lan
+    name: "V33 power"
+    tuya_lan_id: plug_v33
+    datapoint: 1
+
+sensor:
+  - platform: tuya_lan
+    name: "V35 power meter"
+    tuya_lan_id: plug_v35
+    datapoint: 19
+    filters:
+      - multiply: 0.1
+
+binary_sensor:
+  - platform: tuya_lan
+    name: "V35 online"
+    tuya_lan_id: plug_v35
