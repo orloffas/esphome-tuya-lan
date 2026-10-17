@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install mbedtls
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmbedtls-dev
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      # tinytuya generates the reference fixtures; uv is there because the
+      # Makefile runs the generator through `uv run`.
+      - name: Install tinytuya and uv
+        run: pip install tinytuya uv
+
+      - name: Protocol test against tinytuya
+        run: make -C tests/host test
+
+  esphome-compile:
+    name: ESPHome compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      # The toolchain download dominates the run time; the compile itself is short.
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.platformio
+            ~/.esphome
+          key: esphome-${{ runner.os }}-${{ hashFiles('.github/test/compile-test.yaml') }}
+          restore-keys: esphome-${{ runner.os }}-
+
+      - name: Compile the test config
+        run: esphome compile .github/test/compile-test.yaml

@@ -1,0 +1,42 @@
+# CodeRabbit review settings. Free for public repositories.
+#
+# Reviews are in English because pull requests are the project's public face;
+# switch `language` to ru-RU if that stops being true.
+language: en-US
+early_access: false
+
+reviews:
+  # Balanced rather than assertive: a one-maintainer project does not need a
+  # bot with an opinion about every line.
+  profile: chill
+  high_level_summary: true
+  review_status: true
+  # Neither of these says anything about the code.
+  poem: false
+  in_progress_fortune: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_instructions:
+    - path: "components/tuya_lan/tuya_protocol.*"
+      instructions: |
+        Pure protocol core, no ESPHome dependency. Check bounds on every length
+        read from the network, HMAC/GCM tag verification before use of payload,
+        and that nothing logs a local_key. Changes here need a green
+        `make -C tests/host test`.
+
+    - path: "**/*.yaml"
+      instructions: |
+        Examples must take local_key, device_id and addresses from `!secret`.
+        Flag any literal that looks like a real key or address.
+
+    - path: ".github/workflows/**"
+      instructions: |
+        Check that contexts are actually available where they are used — `secrets`
+        is not readable from a step's `if`, and a workflow file that fails to parse
+        produces a run named after the file rather than an error anyone notices.
+
+chat:
+  auto_reply: true
