@@ -10,3 +10,7 @@ build/
 # Agent state
 .omc/
 .DS_Store
+
+# Host test build artifacts
+tests/host/test_protocol
+tests/host/*.dSYM/
