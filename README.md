@@ -121,11 +121,14 @@ These come from Tuya, not from the plug itself. The usual route is the [tinytuya
 
 On connect, 3.4 and 3.5 devices negotiate a per-session key from a client and a device nonce (HMAC-SHA256, then an AES step). After that the component polls the plug on `poll_interval`, sends commands from a queue, and sends a heartbeat so the plug keeps the connection. Each decoded data-point update is handed to the main loop, which publishes it on the matching entity. For 3.5, every GCM nonce comes from the ESP32 hardware RNG.
 
-## Target devices
+## Tested devices
 
-The component is built for these plugs. The protocol codec is verified against
-tinytuya in CI, but on-device testing against the real hardware is still pending,
-so read this as intended coverage, not a tested-hardware claim.
+The protocol codec is verified against tinytuya in CI, and the component has been
+run against these plugs on real hardware: it reads and decodes their status
+correctly, with current/power/voltage matching a reference client to the tenth,
+and stays stable over long read-only runs. Switching the plugs from the board has
+not yet been exercised live (that write path is host-tested but is the next
+on-device step), so hold that part as not-yet-field-proven.
 
 | Plug | Protocol | Switch DP | Notes |
 |------|----------|-----------|-------|
@@ -269,11 +272,14 @@ binary_sensor:
 
 При подключении устройства 3.4 и 3.5 согласуют сессионный ключ из клиентского и серверного nonce (HMAC-SHA256, затем шаг AES). Дальше компонент опрашивает розетку по `poll_interval`, шлёт команды из очереди и heartbeat, чтобы розетка держала соединение. Каждое разобранное изменение DP передаётся в главный цикл, который публикует его на нужной сущности. Для 3.5 все GCM-nonce берутся из аппаратного генератора случайных чисел ESP32.
 
-## Целевые устройства
+## Проверенные устройства
 
-Компонент сделан под эти розетки. Кодек протокола сверяется с tinytuya в CI, но
-живых тестов на самом оборудовании ещё не было, поэтому таблицу стоит читать как
-планируемую поддержку, а не как заявление о протестированном железе.
+Кодек протокола сверяется с tinytuya в CI, и компонент прогнан с этими розетками
+на реальном железе: он корректно читает и декодирует их статус — ток, мощность и
+напряжение совпадают с эталонным клиентом до десятой, — и держится стабильно на
+долгих прогонах в режиме только чтения. Переключение розеток самой платой вживую
+ещё не гоняли (этот путь записи покрыт host-тестом, но это следующий шаг на
+железе), так что эту часть считайте пока не подтверждённой в поле.
 
 | Розетка | Протокол | DP выключателя | Примечания |
 |---------|----------|----------------|------------|
