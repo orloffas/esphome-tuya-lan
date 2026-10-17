@@ -55,7 +55,7 @@ jobs:
         run: pip install esphome
 
       # The toolchain download dominates the run time; the compile itself is short.
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.platformio
