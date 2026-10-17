@@ -7,6 +7,13 @@
 #include <mbedtls/gcm.h>
 #include <mbedtls/md.h>
 
+// ESP_PLATFORM is defined by the ESP-IDF toolchain for every translation unit
+// (also under the Arduino-ESP32 framework, which is built on ESP-IDF), while
+// this file includes no ESPHome headers so it stays host-buildable.
+#ifdef ESP_PLATFORM
+#include <esp_random.h>
+#endif
+
 namespace esphome {
 namespace tuya_lan {
 namespace proto {
@@ -122,6 +129,17 @@ void hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *data, size_t
   mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), key, key_len, data, data_len, out);
 }
 
+// Fill a buffer with random bytes. On ESP this is the hardware RNG; rand() is
+// only the host-build fallback for test tooling and never runs on a device.
+static void fill_random(uint8_t *p, size_t n) {
+#ifdef ESP_PLATFORM
+  esp_fill_random(p, n);
+#else
+  for (size_t i = 0; i < n; i++)
+    p[i] = static_cast<uint8_t>(rand());  // NOLINT: host-only fallback
+#endif
+}
+
 uint32_t crc32(const uint8_t *data, size_t len) {
   // Reflected CRC-32 (zlib / binascii.crc32), poly 0xEDB88320.
   uint32_t crc = 0xFFFFFFFFu;
@@ -215,8 +233,7 @@ Bytes Codec::encode(uint32_t cmd, const std::string &json_payload, uint32_t seqn
     } else {
       // Random 12-byte nonce; transmitted in the frame, so a fresh value per
       // message is required for GCM security and is wire-compatible.
-      for (int i = 0; i < 12; i++)
-        iv[i] = static_cast<uint8_t>(rand());  // NOLINT: seeded by component
+      fill_random(iv, 12);
     }
     return pack_6699(seqno, cmd, payload, iv);
   }
@@ -341,8 +358,7 @@ Bytes Codec::session_step1(uint32_t seqno, const uint8_t *local_nonce16, const u
   if (local_nonce16 != nullptr) {
     std::memcpy(local_nonce_, local_nonce16, 16);
   } else {
-    for (int i = 0; i < 16; i++)
-      local_nonce_[i] = static_cast<uint8_t>(rand());  // NOLINT: component injects HW RNG
+    fill_random(local_nonce_, 16);
   }
   have_local_nonce_ = true;
   have_remote_nonce_ = false;
