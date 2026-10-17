@@ -54,6 +54,8 @@ external_components:
     components: [tuya_lan]
 ```
 
+Pin a release for reproducible builds by adding `ref: v0.1.0` under `source`.
+
 ## Configuration
 
 Declare one `tuya_lan:` hub per plug, then add platform entities that point at it with `tuya_lan_id`.
@@ -145,6 +147,12 @@ per-message sequence number within a session. Keep the plugs on a trusted networ
 and keep the `local_key` secret. This is a property of the protocol, not of this
 implementation.
 
+## Limitations
+
+- ESP32 only — it relies on mbedtls and a FreeRTOS task.
+- Boolean and integer data points are supported; string, enum and bitmap DPs are ignored for now.
+- The Arduino framework is expected to work but has only been built on ESP-IDF so far.
+
 ## Credits
 
 The protocol is implemented from scratch against [tinytuya](https://github.com/jasonacox/tinytuya) (MIT) as the reference. Thanks to that project and to the people who documented the Tuya local protocol.
@@ -204,6 +212,8 @@ external_components:
       url: https://github.com/orloffas/esphome-tuya-lan
     components: [tuya_lan]
 ```
+
+Для воспроизводимых сборок зафиксируйте релиз, добавив `ref: v0.1.0` под `source`.
 
 ## Настройка
 
@@ -295,6 +305,12 @@ binary_sensor:
 между сессиями, но порядковый номер внутри сессии ни один из них не проверяет.
 Держите розетки в доверенной сети, а `local_key` — в секрете. Это свойство самого
 протокола, а не этой реализации.
+
+## Ограничения
+
+- Только ESP32 — нужны mbedtls и задача FreeRTOS.
+- Поддержаны булевы и целочисленные DP; строковые, enum и битовые DP пока игнорируются.
+- Фреймворк Arduino должен работать, но собиралось пока только на ESP-IDF.
 
 ## Благодарности
 
