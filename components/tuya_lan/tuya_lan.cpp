@@ -45,8 +45,18 @@ void TuyaLanDevice::setup() {
   }
   this->rx_queue_ = xQueueCreate(16, sizeof(DpUpdate));
   this->tx_queue_ = xQueueCreate(8, sizeof(Command));
-  // 8 KB stack: TLS-free sockets + mbedtls GCM/ECB contexts fit comfortably.
-  xTaskCreate(TuyaLanDevice::task_entry, "tuya_lan", 8192, this, tskIDLE_PRIORITY + 1, &this->task_);
+  if (this->rx_queue_ == nullptr || this->tx_queue_ == nullptr) {
+    ESP_LOGE(TAG, "failed to allocate queues");
+    this->mark_failed();
+    return;
+  }
+  // 8 KB stack: sockets + mbedtls GCM/ECB contexts fit (verify the high-water
+  // mark with uxTaskGetStackHighWaterMark during the first live test).
+  if (xTaskCreate(TuyaLanDevice::task_entry, "tuya_lan", 8192, this, tskIDLE_PRIORITY + 1,
+                  &this->task_) != pdPASS) {
+    ESP_LOGE(TAG, "failed to start network task");
+    this->mark_failed();
+  }
 }
 
 void TuyaLanDevice::loop() {
@@ -86,9 +96,9 @@ void TuyaLanDevice::task_loop() {
   const uint8_t *key = reinterpret_cast<const uint8_t *>(this->local_key_.data());
 
   while (true) {
+    this->drain_commands_();  // keep desired_ current even while reconnecting
     if (this->sock_ < 0) {
       if (!this->connect_()) {
-        this->online_.store(false);
         vTaskDelay(pdMS_TO_TICKS(5000));
         continue;
       }
@@ -96,6 +106,8 @@ void TuyaLanDevice::task_loop() {
       this->seqno_ = 1;
       this->negotiated_ = false;
       this->rx_buf_.clear();
+      this->confirmed_.clear();  // plug state is unknown until it reports again
+      this->last_assert_ = 0;
       this->codec_ = std::make_unique<proto::Codec>(this->version_, key);
     }
 
@@ -116,37 +128,38 @@ void TuyaLanDevice::task_loop() {
     while (this->sock_ >= 0) {
       const uint32_t now = millis();
 
-      // Outgoing boolean DP writes from the main loop.
-      Command c;
-      while (xQueueReceive(this->tx_queue_, &c, 0) == pdTRUE) {
-        char dps[48];
-        snprintf(dps, sizeof(dps), "{\"%u\":%s}", c.dp, c.value ? "true" : "false");
-        std::string json;
-        if (this->version_ == proto::Version::V33) {
-          json = "{\"devId\":\"" + this->device_id_ + "\",\"uid\":\"" + this->device_id_ +
-                 "\",\"t\":\"" + std::to_string((uint32_t) ::time(nullptr)) + "\",\"dps\":" + dps + "}";
-          this->send_command_(proto::CMD_CONTROL, json);
-        } else {
-          json = "{\"protocol\":5,\"t\":" + std::to_string((uint32_t) ::time(nullptr)) +
-                 ",\"data\":{\"dps\":" + dps + "}}";
-          this->send_command_(proto::CMD_CONTROL_NEW, json);
-        }
-      }
+      this->drain_commands_();
+      this->assert_desired_(now);  // may disconnect on send failure
+      if (this->sock_ < 0)
+        break;
 
       if (now - last_poll >= this->poll_interval_ || last_poll == 0) {
         last_poll = now;
-        if (this->version_ == proto::Version::V33)
-          this->send_command_(proto::CMD_DP_QUERY,
-                              "{\"gwId\":\"" + this->device_id_ + "\",\"devId\":\"" + this->device_id_ +
-                                  "\",\"uid\":\"" + this->device_id_ + "\",\"t\":\"" +
-                                  std::to_string((uint32_t) ::time(nullptr)) + "\"}");
-        else
-          this->send_command_(proto::CMD_DP_QUERY_NEW, "{}");
+        std::string query;
+        uint32_t cmd;
+        if (this->version_ == proto::Version::V33) {
+          query = "{\"gwId\":\"" + this->device_id_ + "\",\"devId\":\"" + this->device_id_ +
+                  "\",\"uid\":\"" + this->device_id_ + "\",\"t\":\"" + this->timestamp_() + "\"}";
+          cmd = proto::CMD_DP_QUERY;
+        } else {
+          query = "{}";
+          cmd = proto::CMD_DP_QUERY_NEW;
+        }
+        if (!this->send_command_(cmd, query)) {
+          this->disconnect_();
+          break;
+        }
       }
 
       if (now - last_hb >= 10000) {
         last_hb = now;
-        this->send_command_(proto::CMD_HEART_BEAT, "{}");
+        // tinytuya's default heartbeat payload; bare "{}" is accepted by most
+        // firmwares but this matches the reference exactly.
+        std::string hb = "{\"gwId\":\"" + this->device_id_ + "\",\"devId\":\"" + this->device_id_ + "\"}";
+        if (!this->send_command_(proto::CMD_HEART_BEAT, hb)) {
+          this->disconnect_();
+          break;
+        }
       }
 
       // Read whatever is available (blocks up to 1 s via SO_RCVTIMEO).
@@ -154,9 +167,10 @@ void TuyaLanDevice::task_loop() {
       int n = ::recv(this->sock_, buf, sizeof(buf), 0);
       if (n > 0) {
         this->rx_buf_.insert(this->rx_buf_.end(), buf, buf + n);
-        this->pump_rx_();
-        last_rx = now;
-        this->online_.store(true);
+        if (this->pump_rx_()) {  // only authenticated frames count as "alive"
+          last_rx = now;
+          this->online_.store(true);
+        }
       } else if (n == 0) {
         ESP_LOGW(TAG, "connection closed by device");
         this->disconnect_();
@@ -165,12 +179,13 @@ void TuyaLanDevice::task_loop() {
         this->disconnect_();
       }
 
-      if (now - last_rx > 30000) {
-        ESP_LOGW(TAG, "no data for 30 s, reconnecting");
-        this->online_.store(false);
+      if (this->sock_ >= 0 && now - last_rx > 30000) {
+        ESP_LOGW(TAG, "no authenticated data for 30 s, reconnecting");
         this->disconnect_();
       }
     }
+
+    vTaskDelay(pdMS_TO_TICKS(3000));  // backoff so a flapping plug is not hammered
   }
 }
 
@@ -237,6 +252,8 @@ void TuyaLanDevice::disconnect_() {
   }
   this->negotiated_ = false;
   this->rx_buf_.clear();
+  this->confirmed_.clear();     // plug state is unknown once the link is gone
+  this->online_.store(false);   // never report control we no longer have
 }
 
 bool TuyaLanDevice::send_frame_(const proto::Bytes &frame) {
@@ -250,42 +267,12 @@ bool TuyaLanDevice::send_frame_(const proto::Bytes &frame) {
   return true;
 }
 
-// Extract one complete frame from rx_buf_, resynchronising on garbage.
-static bool extract_frame(std::vector<uint8_t> &buf, proto::Bytes &out) {
-  while (buf.size() >= 4) {
-    uint32_t prefix = (uint32_t(buf[0]) << 24) | (uint32_t(buf[1]) << 16) | (uint32_t(buf[2]) << 8) | buf[3];
-    size_t total;
-    if (prefix == 0x000055AAu) {
-      if (buf.size() < 16)
-        return false;
-      uint32_t len = (uint32_t(buf[12]) << 24) | (uint32_t(buf[13]) << 16) | (uint32_t(buf[14]) << 8) | buf[15];
-      total = 16 + len;
-    } else if (prefix == 0x00006699u) {
-      if (buf.size() < 18)
-        return false;
-      uint32_t len = (uint32_t(buf[14]) << 24) | (uint32_t(buf[15]) << 16) | (uint32_t(buf[16]) << 8) | buf[17];
-      total = 18 + len + 4;
-    } else {
-      buf.erase(buf.begin());  // desynced, drop a byte and rescan
-      continue;
-    }
-    if (total > 2048) {  // corrupt length, resync
-      buf.erase(buf.begin());
-      continue;
-    }
-    if (buf.size() < total)
-      return false;
-    out.assign(buf.begin(), buf.begin() + total);
-    buf.erase(buf.begin(), buf.begin() + total);
-    return true;
-  }
-  return false;
-}
-
-void TuyaLanDevice::pump_rx_() {
+bool TuyaLanDevice::pump_rx_() {
+  bool any_ok = false;
   proto::Bytes frame;
-  while (extract_frame(this->rx_buf_, frame))
-    this->handle_frame_(frame);
+  while (proto::extract_frame(this->rx_buf_, frame))
+    any_ok |= this->handle_frame_(frame);
+  return any_ok;
 }
 
 bool TuyaLanDevice::negotiate_session_() {
@@ -304,11 +291,12 @@ bool TuyaLanDevice::negotiate_session_() {
   if (!this->send_frame_(this->codec_->session_step1(this->seqno_++, nonce, iv1p)))
     return false;
 
-  // Wait up to 3 s for the SESS_KEY_NEG_RESP frame.
-  const uint32_t deadline = millis() + 3000;
+  // Wait up to 3 s for the SESS_KEY_NEG_RESP frame (elapsed form survives the
+  // ~49-day millis() wrap).
+  const uint32_t start = millis();
   proto::Bytes frame;
-  while (millis() < deadline) {
-    if (extract_frame(this->rx_buf_, frame)) {
+  while (millis() - start < 3000) {
+    if (proto::extract_frame(this->rx_buf_, frame)) {
       auto d = this->codec_->decode(frame);
       if (!d.ok || d.cmd != proto::CMD_SESS_KEY_NEG_RESP)
         continue;
@@ -347,6 +335,53 @@ bool TuyaLanDevice::send_command_(uint8_t cmd, const std::string &json) {
   return this->send_frame_(frame);
 }
 
+std::string TuyaLanDevice::timestamp_() const {
+  return std::to_string((uint32_t) ::time(nullptr));
+}
+
+bool TuyaLanDevice::apply_dp_(uint8_t dp, bool value) {
+  char dps[48];
+  snprintf(dps, sizeof(dps), "{\"%u\":%s}", dp, value ? "true" : "false");
+  if (this->version_ == proto::Version::V33) {
+    std::string json = "{\"devId\":\"" + this->device_id_ + "\",\"uid\":\"" + this->device_id_ +
+                       "\",\"t\":\"" + this->timestamp_() + "\",\"dps\":" + dps + "}";
+    return this->send_command_(proto::CMD_CONTROL, json);
+  }
+  std::string json = "{\"protocol\":5,\"t\":" + this->timestamp_() + ",\"data\":{\"dps\":" + dps + "}}";
+  return this->send_command_(proto::CMD_CONTROL_NEW, json);
+}
+
+void TuyaLanDevice::drain_commands_() {
+  // Collapse all queued intents into the latest value per DP, so a burst (or a
+  // backlog built up while offline) never replays stale commands.
+  Command c;
+  while (xQueueReceive(this->tx_queue_, &c, 0) == pdTRUE) {
+    bool v = c.value != 0;
+    if (this->desired_.find(c.dp) == this->desired_.end() || this->desired_[c.dp] != v)
+      this->last_assert_ = 0;  // new intent: assert without waiting
+    this->desired_[c.dp] = v;
+  }
+}
+
+void TuyaLanDevice::assert_desired_(uint32_t now) {
+  if (this->sock_ < 0)
+    return;
+  // Re-send any DP the plug has not confirmed at the value we want. Retry at
+  // most every 2 s so a plug that never confirms is not flooded.
+  if (this->last_assert_ != 0 && now - this->last_assert_ < 2000)
+    return;
+  this->last_assert_ = now == 0 ? 1 : now;
+  for (auto &kv : this->desired_) {
+    auto it = this->confirmed_.find(kv.first);
+    if (it != this->confirmed_.end() && it->second == kv.second)
+      continue;  // already in the desired state
+    if (!this->apply_dp_(kv.first, kv.second)) {
+      this->disconnect_();  // send failed: reconnect, then re-assert from scratch
+      return;
+    }
+  }
+}
+
 void TuyaLanDevice::publish_dps_(const std::string &json) {
   json::parse_json(json, [this](JsonObject root) -> bool {
     JsonObject dps = root["dps"].as<JsonObject>();
@@ -355,14 +390,20 @@ void TuyaLanDevice::publish_dps_(const std::string &json) {
     if (dps.isNull())
       return false;
     for (JsonPair kv : dps) {
-      uint8_t dp = (uint8_t) atoi(kv.key().c_str());
+      long dp_id = atol(kv.key().c_str());
+      if (dp_id < 1 || dp_id > 255)  // Tuya DP ids are 1..255
+        continue;
+      uint8_t dp = (uint8_t) dp_id;
       JsonVariant val = kv.value();
       DpUpdate u{dp, DpValue::INT, 0};
       if (val.is<bool>()) {
         u.type = DpValue::BOOL;
         u.value = val.as<bool>() ? 1 : 0;
+        this->confirmed_[dp] = (u.value != 0);  // closes the write-retry loop
+      } else if (val.is<long long>()) {
+        u.value = (int32_t) val.as<long long>();
       } else {
-        u.value = val.as<int32_t>();
+        continue;  // ignore strings/null/float DPs (not supported yet)
       }
       xQueueSend(this->rx_queue_, &u, 0);
     }
@@ -370,13 +411,16 @@ void TuyaLanDevice::publish_dps_(const std::string &json) {
   });
 }
 
-void TuyaLanDevice::handle_frame_(const proto::Bytes &frame) {
+bool TuyaLanDevice::handle_frame_(const proto::Bytes &frame) {
   auto d = this->codec_->decode(frame);
-  if (!d.ok)
-    return;
+  if (!d.ok) {
+    ESP_LOGW(TAG, "dropped an undecodable frame (%u bytes)", (unsigned) frame.size());
+    return false;
+  }
   // Any decoded payload that looks like a JSON object may carry DP state.
   if (!d.payload.empty() && d.payload[0] == '{')
     this->publish_dps_(d.payload);
+  return true;  // authenticated frame, device is alive
 }
 
 #else  // !USE_ESP32 — the network path requires FreeRTOS + lwip.

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -79,11 +80,19 @@ class TuyaLanDevice : public Component {
   void disconnect_();
   bool negotiate_session_();
   bool send_frame_(const proto::Bytes &frame);
-  // Pull whole frames out of the RX accumulator and dispatch them.
-  void pump_rx_();
-  void handle_frame_(const proto::Bytes &frame);
+  // Pull whole frames out of the RX accumulator and dispatch them. Returns true
+  // if at least one frame authenticated (used to mark the device online).
+  bool pump_rx_();
+  bool handle_frame_(const proto::Bytes &frame);
   bool send_command_(uint8_t cmd, const std::string &json);
   void publish_dps_(const std::string &json);
+  // Move queued write intents into desired_ (task-side, latest value per DP).
+  void drain_commands_();
+  // Re-send any DP whose last reported value does not match what we want, with
+  // throttling; a send failure drops the connection so the state is re-asserted.
+  void assert_desired_(uint32_t now);
+  bool apply_dp_(uint8_t dp, bool value);
+  std::string timestamp_() const;
 
   TaskHandle_t task_{nullptr};
   QueueHandle_t rx_queue_{nullptr};   // DpUpdate: task -> main loop
@@ -93,6 +102,11 @@ class TuyaLanDevice : public Component {
   std::unique_ptr<proto::Codec> codec_;  // per-connection; holds 3.4/3.5 session key
   uint32_t seqno_{1};
   bool negotiated_{false};
+  // Task-only. desired_ survives reconnects (what we want); confirmed_ is what
+  // the plug last reported and is cleared on disconnect (state becomes unknown).
+  std::map<uint8_t, bool> desired_;
+  std::map<uint8_t, bool> confirmed_;
+  uint32_t last_assert_{0};
 #endif
 
   struct Listener {

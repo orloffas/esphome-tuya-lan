@@ -53,6 +53,16 @@ void hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *data, size_t
                  uint8_t out[32]);
 uint32_t crc32(const uint8_t *data, size_t len);
 
+// Largest frame length we will accept from the wire. A header claiming more is
+// treated as corrupt; also keeps length arithmetic far from any overflow.
+constexpr uint32_t MAX_FRAME_LEN = 2048;
+
+// Pull one complete frame out of a TCP reassembly buffer, resynchronising past
+// garbage. On success returns true, fills `out` with a non-empty frame and
+// removes it from `buf`; returns false when more bytes are needed. Lives here
+// (not in the ESPHome layer) so the host test can feed it hostile input.
+bool extract_frame(Bytes &buf, Bytes &out);
+
 // --- Decoded frame ---------------------------------------------------------
 
 struct DecodedFrame {

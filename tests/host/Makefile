@@ -1,7 +1,9 @@
 # Host test for the Tuya LAN protocol codec.
 # Requires mbedtls (macOS: `brew install mbedtls`; Debian: `apt install libmbedtls-dev`).
 CXX ?= c++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -O1 -g
+# TUYA_LAN_HOST_BUILD selects the rand() RNG fallback; on a device ESP_PLATFORM
+# is defined instead and esp_random() is used (see tuya_protocol.cpp).
+CXXFLAGS ?= -std=c++17 -Wall -Wextra -O1 -g -DTUYA_LAN_HOST_BUILD
 
 # Discover mbedtls headers/libs from Homebrew when present, else rely on system paths.
 # Prefer mbedtls@3: ESP-IDF ships mbedtls 3.x, and mbedtls 4.x moved the classic

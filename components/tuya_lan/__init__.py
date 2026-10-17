@@ -37,6 +37,10 @@ CONFIG_SCHEMA = cv.Schema(
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
+# mbedtls GCM and the FreeRTOS network task are ESP32-only; fail config
+# validation with a clear message rather than a cryptic build error elsewhere.
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, cv.only_on_esp32)
+
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])

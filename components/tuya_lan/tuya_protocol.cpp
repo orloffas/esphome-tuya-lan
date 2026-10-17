@@ -41,6 +41,14 @@ uint32_t get_u32_be(const uint8_t *p) {
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
 
+// Constant-time equality, so HMAC verification does not leak via timing.
+bool ct_equal(const uint8_t *a, const uint8_t *b, size_t n) {
+  uint8_t diff = 0;
+  for (size_t i = 0; i < n; i++)
+    diff |= a[i] ^ b[i];
+  return diff == 0;
+}
+
 // 3-byte version string + 12 null bytes = 15-byte protocol header.
 const char *version_str(Version v) {
   switch (v) {
@@ -134,9 +142,12 @@ void hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *data, size_t
 static void fill_random(uint8_t *p, size_t n) {
 #ifdef ESP_PLATFORM
   esp_fill_random(p, n);
-#else
+#elif defined(TUYA_LAN_HOST_BUILD)
   for (size_t i = 0; i < n; i++)
-    p[i] = static_cast<uint8_t>(rand());  // NOLINT: host-only fallback
+    p[i] = static_cast<uint8_t>(rand());  // NOLINT: host test tooling only
+#else
+#error "No secure RNG available. Firmware builds define ESP_PLATFORM; the host \
+test must build with -DTUYA_LAN_HOST_BUILD. rand() must never reach a device."
 #endif
 }
 
@@ -149,6 +160,43 @@ uint32_t crc32(const uint8_t *data, size_t len) {
       crc = (crc >> 1) ^ (0xEDB88320u & (~(crc & 1) + 1));
   }
   return crc ^ 0xFFFFFFFFu;
+}
+
+bool extract_frame(Bytes &buf, Bytes &out) {
+  while (buf.size() >= 4) {
+    uint32_t prefix = get_u32_be(buf.data());
+    size_t total;
+    if (prefix == PREFIX_55AA) {
+      if (buf.size() < 16)
+        return false;  // need the whole header to know the length
+      uint32_t len = get_u32_be(buf.data() + 12);
+      if (len > MAX_FRAME_LEN) {  // corrupt length — drop one byte and resync
+        buf.erase(buf.begin());
+        continue;
+      }
+      total = 16 + size_t(len);
+    } else if (prefix == PREFIX_6699) {
+      if (buf.size() < 18)
+        return false;
+      uint32_t len = get_u32_be(buf.data() + 14);
+      if (len > MAX_FRAME_LEN) {
+        buf.erase(buf.begin());
+        continue;
+      }
+      total = 18 + size_t(len) + 4;  // + 4-byte suffix
+    } else {
+      buf.erase(buf.begin());  // not a frame start — resync
+      continue;
+    }
+    // total is bounded by MAX_FRAME_LEN (no wrap) and >= 16, so a returned
+    // frame is always non-empty: pump callers always make progress.
+    if (buf.size() < total)
+      return false;  // wait for the rest of the frame
+    out.assign(buf.begin(), buf.begin() + total);
+    buf.erase(buf.begin(), buf.begin() + total);
+    return true;
+  }
+  return false;
 }
 
 // --- Codec -----------------------------------------------------------------
@@ -268,7 +316,9 @@ DecodedFrame Codec::decode(const Bytes &data) {
     f.seqno = get_u32_be(data.data() + 4);
     f.cmd = get_u32_be(data.data() + 8);
     uint32_t length = get_u32_be(data.data() + 12);
-    const size_t msg_end = 16 + length;
+    if (length > MAX_FRAME_LEN)  // reject before any addition: 16+length can't wrap
+      return f;
+    const size_t msg_end = 16 + size_t(length);
     if (data.size() < msg_end)
       return f;
 
@@ -283,7 +333,7 @@ DecodedFrame Codec::decode(const Bytes &data) {
     if (use_hmac) {
       uint8_t mac[32];
       hmac_sha256(key_, 16, data.data(), check_len, mac);
-      if (std::memcmp(mac, data.data() + check_len, 32) != 0)
+      if (!ct_equal(mac, data.data() + check_len, 32))
         return f;
     } else {
       uint32_t have = crc32(data.data(), check_len);
@@ -305,6 +355,10 @@ DecodedFrame Codec::decode(const Bytes &data) {
       if (raw.size() >= 15 && std::memcmp(raw.data(), vh.data(), 3) == 0)
         raw.erase(raw.begin(), raw.begin() + 15);
       plain = aes_ecb_decrypt(key_, raw, /*unpad=*/true);
+      // 3.3 has no keyed authentication (CRC only), so a wrong local_key passes
+      // the CRC and only shows up as a decrypt that yields nothing usable.
+      if (plain.empty())
+        return f;
     }
     f.payload.assign(plain.begin(), plain.end());
     f.ok = true;
@@ -320,8 +374,10 @@ DecodedFrame Codec::decode(const Bytes &data) {
     f.seqno = get_u32_be(data.data() + 6);
     f.cmd = get_u32_be(data.data() + 10);
     uint32_t length = get_u32_be(data.data() + 14);
+    if (length > MAX_FRAME_LEN)  // reject before any addition: 18+length can't wrap
+      return f;
     // length counts iv(12)+ct+tag(16); full frame adds the 4-byte suffix.
-    const size_t msg_end = header_len + length;  // end of iv+ct+tag
+    const size_t msg_end = header_len + size_t(length);  // end of iv+ct+tag
     if (length < 12 + 16 || data.size() < msg_end + 4)
       return f;
 

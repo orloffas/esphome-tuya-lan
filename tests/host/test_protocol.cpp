@@ -14,6 +14,7 @@
 
 using esphome::tuya_lan::proto::Bytes;
 using esphome::tuya_lan::proto::Codec;
+using esphome::tuya_lan::proto::extract_frame;
 using esphome::tuya_lan::proto::Version;
 
 static int g_pass = 0, g_fail = 0;
@@ -72,6 +73,32 @@ int main(int argc, char **argv) {
   auto recs = load(path);
   if (recs.empty()) { std::printf("no fixtures loaded from %s\n", path.c_str()); return 2; }
 
+  // --- frame extractor: malformed lengths must resync, never hang ---
+  {
+    // 55AA header claiming length 0xFFFFFFF0 (would wrap 16+len to 0).
+    Bytes buf = unhex("000055aa000000010000000afffffff0");
+    Bytes out;
+    bool got = extract_frame(buf, out);  // must consume garbage and return false
+    check("extract_55aa_wrap_no_hang", (!got && buf.size() < 4) ? "ok" : "HANG", "ok");
+
+    // 6699 header (prefix|00|seqno|cmd|len) claiming length 0xFFFFFFFC.
+    buf = unhex("000066990000000000010000000dfffffffc");
+    got = extract_frame(buf, out);
+    check("extract_6699_wrap_no_hang", (!got && buf.size() < 4) ? "ok" : "HANG", "ok");
+
+    // Garbage then a valid frame: the extractor must resync and find the frame.
+    for (auto &r : recs) {
+      if (r["op"] != "decode") continue;
+      Bytes good = unhex(r["frame"]);
+      Bytes mixed = unhex("deadbeef");
+      mixed.insert(mixed.end(), good.begin(), good.end());
+      Bytes out2;
+      bool ok = extract_frame(mixed, out2);
+      check("extract_resync_after_garbage", (ok && out2 == good) ? "ok" : "LOST", "ok");
+      break;
+    }
+  }
+
   for (auto &r : recs) {
     const std::string &op = r["op"];
     const std::string &name = r["name"];
@@ -124,6 +151,21 @@ int main(int argc, char **argv) {
       Bytes frame = unhex(r["frame"]);
       auto d = codec.decode(frame);
       check(name, d.ok ? d.payload : "DECODE_FAILED", r["expect_json"]);
+
+      // Negative: a single flipped byte must fail CRC (3.3), HMAC (3.4) or the
+      // GCM tag (3.5). Catches a regression that drops the check.
+      if (frame.size() > 8) {
+        Bytes bad = frame;
+        bad[frame.size() / 2] ^= 0x01;
+        Codec c2(ver(r["version"]), key.data());
+        check(name + "_tampered", c2.decode(bad).ok ? "ACCEPTED_BAD" : "rejected", "rejected");
+      }
+      // Negative: a truncated frame must not decode.
+      if (frame.size() > 4) {
+        Bytes trunc(frame.begin(), frame.end() - 3);
+        Codec c3(ver(r["version"]), key.data());
+        check(name + "_truncated", c3.decode(trunc).ok ? "ACCEPTED_SHORT" : "rejected", "rejected");
+      }
     }
   }
 
