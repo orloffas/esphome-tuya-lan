@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "tuya_protocol.h"
@@ -69,8 +70,16 @@ class TuyaLanDevice : public Component {
 
   // Called from switch write_state() on the main loop: queue a boolean DP write.
   void set_bool_dp(uint8_t dp, bool value);
+  // Drop the stored intent for one DP (or all of them) so the device stops
+  // re-asserting it after reconnects; the switch still follows the plug's own
+  // reports. Use this when control is handed back to another controller, so a
+  // stale desired state cannot flip a plug the other controller just changed.
+  void release_dp(uint8_t dp);
+  void release_all();
 
   bool is_online() const { return this->online_.load(); }
+  // True while some DP's desired value differs from what the plug last reported.
+  bool has_pending_writes() const { return this->pending_writes_.load(); }
 
  protected:
 #ifdef USE_ESP32
@@ -93,6 +102,8 @@ class TuyaLanDevice : public Component {
   void assert_desired_(uint32_t now);
   bool apply_dp_(uint8_t dp, bool value);
   std::string timestamp_() const;
+  // Recompute has_pending_writes() from desired_ vs confirmed_.
+  void update_pending_();
 
   TaskHandle_t task_{nullptr};
   QueueHandle_t rx_queue_{nullptr};   // DpUpdate: task -> main loop
@@ -107,6 +118,12 @@ class TuyaLanDevice : public Component {
   std::map<uint8_t, bool> desired_;
   std::map<uint8_t, bool> confirmed_;
   uint32_t last_assert_{0};
+  // Release requests from the main loop. Atomic (not the bounded command queue)
+  // so a handover's "stop controlling this plug" can never be dropped and is
+  // applied even while disconnected. release_bits_[dp>>6] bit (dp&63) marks one
+  // DP to drop from desired_.
+  std::atomic<bool> release_all_pending_{false};
+  std::atomic<uint64_t> release_bits_[4]{};
 #endif
 
   struct Listener {
@@ -124,7 +141,31 @@ class TuyaLanDevice : public Component {
   uint32_t poll_interval_{15000};
 
   std::atomic<bool> online_{false};
+  std::atomic<bool> pending_writes_{false};
   bool last_published_online_{false};
+};
+
+// Action: tuya_lan.release — drop the stored write intent for a hub, so it stops
+// re-asserting a DP after control is handed back to another controller. With a
+// datapoint it releases one DP, otherwise all of them.
+template<typename... Ts> class TuyaLanReleaseAction : public Action<Ts...> {
+ public:
+  explicit TuyaLanReleaseAction(TuyaLanDevice *parent) : parent_(parent) {}
+  void set_datapoint(uint8_t dp) {
+    this->dp_ = dp;
+    this->has_dp_ = true;
+  }
+  void play(Ts... x) override {
+    if (this->has_dp_)
+      this->parent_->release_dp(this->dp_);
+    else
+      this->parent_->release_all();
+  }
+
+ protected:
+  TuyaLanDevice *parent_;
+  uint8_t dp_{0};
+  bool has_dp_{false};
 };
 
 }  // namespace tuya_lan

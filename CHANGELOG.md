@@ -6,6 +6,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-18
+
+### Added
+
+- `tuya_lan.release` action, and the `release_dp(dp)` / `release_all()` methods, to drop a hub's stored write intent so it stops re-asserting a DP after control is handed back to another controller (for example Home Assistant); the switch keeps following the plug's own reports.
+- `has_pending_writes()` — true while a desired DP value has not yet been confirmed by the plug.
+
 ## [0.1.1] - 2026-10-18
 
 ### Fixed

@@ -1,3 +1,4 @@
+from esphome import automation
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_PORT, CONF_VERSION
@@ -12,6 +13,7 @@ CONF_DEVICE_ID = "device_id"
 CONF_LOCAL_KEY = "local_key"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_TUYA_LAN_ID = "tuya_lan_id"
+CONF_DATAPOINT = "datapoint"
 
 tuya_lan_ns = cg.esphome_ns.namespace("tuya_lan")
 TuyaLanDevice = tuya_lan_ns.class_("TuyaLanDevice", cg.Component)
@@ -51,3 +53,24 @@ async def to_code(config):
     cg.add(var.set_local_key(config[CONF_LOCAL_KEY]))
     cg.add(var.set_version(VERSIONS[config[CONF_VERSION]]))
     cg.add(var.set_poll_interval(config[CONF_POLL_INTERVAL]))
+
+
+TuyaLanReleaseAction = tuya_lan_ns.class_("TuyaLanReleaseAction", automation.Action)
+
+
+@automation.register_action(
+    "tuya_lan.release",
+    TuyaLanReleaseAction,
+    automation.maybe_simple_id(
+        {
+            cv.Required(CONF_ID): cv.use_id(TuyaLanDevice),
+            cv.Optional(CONF_DATAPOINT): cv.uint8_t,
+        }
+    ),
+)
+async def tuya_lan_release_to_code(config, action_id, template_arg, args):
+    parent = await cg.get_variable(config[CONF_ID])
+    var = cg.new_Pvariable(action_id, template_arg, parent)
+    if CONF_DATAPOINT in config:
+        cg.add(var.set_datapoint(config[CONF_DATAPOINT]))
+    return var

@@ -113,6 +113,26 @@ A full two-plug example is in [`example/snails-plugs.yaml`](example/snails-plugs
 > empty id and collides with others (`Both convert to ASCII ID`). Give such
 > entities a `name` with some Latin characters, or an explicit `id:`.
 
+### Handing control back to another controller
+
+The hub keeps re-asserting its last command until the plug confirms it, and does
+so again after a reconnect. If another controller (for example Home Assistant)
+should take a plug back, call the `tuya_lan.release` action so the board stops
+re-asserting — otherwise a stale desired state could flip a plug the other
+controller just changed. The switch keeps mirroring the plug's own reports.
+
+```yaml
+# release one DP
+- tuya_lan.release:
+    id: mats
+    datapoint: 1
+# or release every DP of a hub
+- tuya_lan.release: mats
+```
+
+In a lambda, `id(mats).release_all()` / `id(mats).release_dp(1)` do the same, and
+`id(mats).has_pending_writes()` is true while a desired state is not yet confirmed.
+
 ## Finding `device_id` and `local_key`
 
 These come from Tuya, not from the plug itself. The usual route is the [tinytuya wizard](https://github.com/jasonacox/tinytuya#setup-wizard) (a free Tuya IoT developer account, then `python -m tinytuya wizard`). The DP numbers for a metering plug — current, power, voltage — are the ones its device model uses; `18`, `19` and `20` are common, and the [tuya-local](https://github.com/make-all/tuya-local) device files are a good reference.
@@ -274,6 +294,27 @@ binary_sensor:
 > транслитерируя `name` в ASCII. Имя целиком из кириллицы схлопывается в пустой
 > id и конфликтует с другими (`Both convert to ASCII ID`). Давайте таким
 > сущностям `name` хотя бы с латиницей или явный `id:`.
+
+### Возврат управления другому контроллеру
+
+Хаб переигрывает последнюю команду, пока розетка её не подтвердит, и повторяет это
+после реконнекта. Если управление розеткой должен забрать другой контроллер
+(например, Home Assistant), вызовите действие `tuya_lan.release` — тогда плата
+перестанет досылать команду, иначе «тень» прежнего намерения может снова
+переключить розетку, которую только что изменил другой контроллер. Выключатель
+по-прежнему зеркалит отчёты самой розетки.
+
+```yaml
+# отпустить один DP
+- tuya_lan.release:
+    id: mats
+    datapoint: 1
+# или отпустить все DP хаба
+- tuya_lan.release: mats
+```
+
+В лямбде то же самое — `id(mats).release_all()` / `id(mats).release_dp(1)`, а
+`id(mats).has_pending_writes()` истинно, пока желаемое состояние не подтверждено.
 
 ## Где взять `device_id` и `local_key`
 

@@ -84,12 +84,17 @@ void TuyaLanDevice::loop() {
 }
 
 void TuyaLanDevice::set_bool_dp(uint8_t dp, bool value) {
-  if (this->tx_queue_ == nullptr)
-    return;
   Command c{dp, value ? 1 : 0};
-  if (xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
+  if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
     ESP_LOGW(TAG, "command queue full, dropping write to DP %u", dp);
 }
+
+// Releases go through atomics, not the bounded queue, so they are never dropped.
+void TuyaLanDevice::release_dp(uint8_t dp) {
+  this->release_bits_[dp >> 6].fetch_or(1ULL << (dp & 63));
+}
+
+void TuyaLanDevice::release_all() { this->release_all_pending_.store(true); }
 
 void TuyaLanDevice::task_entry(void *arg) { static_cast<TuyaLanDevice *>(arg)->task_loop(); }
 
@@ -261,6 +266,7 @@ void TuyaLanDevice::disconnect_() {
   this->rx_buf_.clear();
   this->confirmed_.clear();     // plug state is unknown once the link is gone
   this->online_.store(false);   // never report control we no longer have
+  this->update_pending_();      // desired now differs from (empty) confirmed
 }
 
 bool TuyaLanDevice::send_frame_(const proto::Bytes &frame) {
@@ -368,17 +374,37 @@ void TuyaLanDevice::drain_commands_() {
       this->last_assert_ = 0;  // new intent: assert without waiting
     this->desired_[c.dp] = v;
   }
+  // Apply releases after writes, so a handover's release always wins over any
+  // write queued for the same DP in the same window.
+  if (this->release_all_pending_.exchange(false))
+    this->desired_.clear();
+  for (int w = 0; w < 4; w++) {
+    uint64_t bits = this->release_bits_[w].exchange(0);
+    while (bits) {
+      int b = __builtin_ctzll(bits);
+      this->desired_.erase(static_cast<uint8_t>(w * 64 + b));
+      bits &= bits - 1;
+    }
+  }
+  this->update_pending_();
+}
+
+void TuyaLanDevice::update_pending_() {
+  this->pending_writes_.store(!dps_needing_assert(this->desired_, this->confirmed_).empty());
 }
 
 void TuyaLanDevice::assert_desired_(uint32_t now) {
   if (this->sock_ < 0)
+    return;
+  auto needing = dps_needing_assert(this->desired_, this->confirmed_);
+  if (needing.empty())
     return;
   // Re-send any DP the plug has not confirmed at the value we want. Retry at
   // most every 2 s so a plug that never confirms is not flooded.
   if (this->last_assert_ != 0 && now - this->last_assert_ < 2000)
     return;
   this->last_assert_ = now == 0 ? 1 : now;
-  for (uint8_t dp : dps_needing_assert(this->desired_, this->confirmed_)) {
+  for (uint8_t dp : needing) {
     if (!this->apply_dp_(dp, this->desired_[dp])) {
       this->disconnect_();  // send failed: reconnect, then re-assert from scratch
       return;
@@ -413,6 +439,7 @@ void TuyaLanDevice::publish_dps_(const std::string &json) {
     }
     return true;
   });
+  this->update_pending_();  // confirmed_ values may have changed
 }
 
 bool TuyaLanDevice::handle_frame_(const proto::Bytes &frame) {
@@ -439,6 +466,8 @@ void TuyaLanDevice::setup() {
 }
 void TuyaLanDevice::loop() {}
 void TuyaLanDevice::set_bool_dp(uint8_t, bool) {}
+void TuyaLanDevice::release_dp(uint8_t) {}
+void TuyaLanDevice::release_all() {}
 
 #endif
 
