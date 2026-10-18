@@ -84,11 +84,21 @@ void TuyaLanDevice::loop() {
 }
 
 void TuyaLanDevice::set_bool_dp(uint8_t dp, bool value) {
-  if (this->tx_queue_ == nullptr)
-    return;
-  Command c{dp, value ? 1 : 0};
-  if (xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
+  Command c{Command::SET, dp, value ? 1 : 0};
+  if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
     ESP_LOGW(TAG, "command queue full, dropping write to DP %u", dp);
+}
+
+void TuyaLanDevice::release_dp(uint8_t dp) {
+  Command c{Command::CLEAR, dp, 0};
+  if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
+    ESP_LOGW(TAG, "command queue full, dropping release of DP %u", dp);
+}
+
+void TuyaLanDevice::release_all() {
+  Command c{Command::CLEAR_ALL, 0, 0};
+  if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
+    ESP_LOGW(TAG, "command queue full, dropping release-all");
 }
 
 void TuyaLanDevice::task_entry(void *arg) { static_cast<TuyaLanDevice *>(arg)->task_loop(); }
@@ -363,22 +373,37 @@ void TuyaLanDevice::drain_commands_() {
   // backlog built up while offline) never replays stale commands.
   Command c;
   while (xQueueReceive(this->tx_queue_, &c, 0) == pdTRUE) {
-    bool v = c.value != 0;
-    if (this->desired_.find(c.dp) == this->desired_.end() || this->desired_[c.dp] != v)
-      this->last_assert_ = 0;  // new intent: assert without waiting
-    this->desired_[c.dp] = v;
+    switch (c.op) {
+      case Command::SET: {
+        bool v = c.value != 0;
+        if (this->desired_.find(c.dp) == this->desired_.end() || this->desired_[c.dp] != v)
+          this->last_assert_ = 0;  // new intent: assert without waiting
+        this->desired_[c.dp] = v;
+        break;
+      }
+      case Command::CLEAR:
+        this->desired_.erase(c.dp);  // stop re-asserting this DP
+        break;
+      case Command::CLEAR_ALL:
+        this->desired_.clear();
+        break;
+    }
   }
 }
 
 void TuyaLanDevice::assert_desired_(uint32_t now) {
   if (this->sock_ < 0)
     return;
+  auto needing = dps_needing_assert(this->desired_, this->confirmed_);
+  this->pending_writes_.store(!needing.empty());  // exposed via has_pending_writes()
+  if (needing.empty())
+    return;
   // Re-send any DP the plug has not confirmed at the value we want. Retry at
   // most every 2 s so a plug that never confirms is not flooded.
   if (this->last_assert_ != 0 && now - this->last_assert_ < 2000)
     return;
   this->last_assert_ = now == 0 ? 1 : now;
-  for (uint8_t dp : dps_needing_assert(this->desired_, this->confirmed_)) {
+  for (uint8_t dp : needing) {
     if (!this->apply_dp_(dp, this->desired_[dp])) {
       this->disconnect_();  // send failed: reconnect, then re-assert from scratch
       return;
@@ -439,6 +464,8 @@ void TuyaLanDevice::setup() {
 }
 void TuyaLanDevice::loop() {}
 void TuyaLanDevice::set_bool_dp(uint8_t, bool) {}
+void TuyaLanDevice::release_dp(uint8_t) {}
+void TuyaLanDevice::release_all() {}
 
 #endif
 

@@ -120,6 +120,9 @@ int main(int argc, char **argv) {
     check("assert_after_reconnect", join(dps_needing_assert(BoolDpMap{{1, false}}, BoolDpMap{})), "1");
     // Only the DP that differs is resent.
     check("assert_multi", join(dps_needing_assert(BoolDpMap{{1, true}, {7, false}}, BoolDpMap{{1, true}})), "7");
+    // After release (desired cleared) the plug's reported ON is NOT re-asserted:
+    // the board stops influencing a plug handed back to another controller.
+    check("released_not_reasserted", join(dps_needing_assert(BoolDpMap{}, BoolDpMap{{1, true}})), "");
     // DP id range.
     check("dpid_0", valid_dp_id(0) ? "T" : "F", "F");
     check("dpid_1", valid_dp_id(1) ? "T" : "F", "T");

@@ -3,6 +3,13 @@
 # Not a user example — see example/snails-plugs.yaml for that.
 esphome:
   name: tuya-lan-citest
+  # Exercise the tuya_lan.release action codegen (both forms).
+  on_boot:
+    then:
+      - tuya_lan.release: plug_v35
+      - tuya_lan.release:
+          id: plug_v33
+          datapoint: 1
 
 esp32:
   board: esp32-s3-devkitc-1

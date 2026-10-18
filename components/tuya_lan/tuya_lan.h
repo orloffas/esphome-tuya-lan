@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
 #include "tuya_protocol.h"
@@ -40,8 +41,9 @@ struct DpUpdate {
 };
 
 struct Command {
+  enum Op : uint8_t { SET, CLEAR, CLEAR_ALL } op;
   uint8_t dp;
-  int32_t value;  // bool encoded as 0/1
+  int32_t value;  // bool encoded as 0/1 (SET only)
 };
 
 class TuyaLanDevice : public Component {
@@ -69,8 +71,16 @@ class TuyaLanDevice : public Component {
 
   // Called from switch write_state() on the main loop: queue a boolean DP write.
   void set_bool_dp(uint8_t dp, bool value);
+  // Drop the stored intent for one DP (or all of them) so the device stops
+  // re-asserting it after reconnects; the switch still follows the plug's own
+  // reports. Use this when control is handed back to another controller, so a
+  // stale desired state cannot flip a plug the other controller just changed.
+  void release_dp(uint8_t dp);
+  void release_all();
 
   bool is_online() const { return this->online_.load(); }
+  // True while some DP's desired value differs from what the plug last reported.
+  bool has_pending_writes() const { return this->pending_writes_.load(); }
 
  protected:
 #ifdef USE_ESP32
@@ -124,7 +134,31 @@ class TuyaLanDevice : public Component {
   uint32_t poll_interval_{15000};
 
   std::atomic<bool> online_{false};
+  std::atomic<bool> pending_writes_{false};
   bool last_published_online_{false};
+};
+
+// Action: tuya_lan.release — drop the stored write intent for a hub, so it stops
+// re-asserting a DP after control is handed back to another controller. With a
+// datapoint it releases one DP, otherwise all of them.
+template<typename... Ts> class TuyaLanReleaseAction : public Action<Ts...> {
+ public:
+  explicit TuyaLanReleaseAction(TuyaLanDevice *parent) : parent_(parent) {}
+  void set_datapoint(uint8_t dp) {
+    this->dp_ = dp;
+    this->has_dp_ = true;
+  }
+  void play(Ts... x) override {
+    if (this->has_dp_)
+      this->parent_->release_dp(this->dp_);
+    else
+      this->parent_->release_all();
+  }
+
+ protected:
+  TuyaLanDevice *parent_;
+  uint8_t dp_{0};
+  bool has_dp_{false};
 };
 
 }  // namespace tuya_lan
