@@ -41,9 +41,8 @@ struct DpUpdate {
 };
 
 struct Command {
-  enum Op : uint8_t { SET, CLEAR, CLEAR_ALL } op;
   uint8_t dp;
-  int32_t value;  // bool encoded as 0/1 (SET only)
+  int32_t value;  // bool encoded as 0/1
 };
 
 class TuyaLanDevice : public Component {
@@ -103,6 +102,8 @@ class TuyaLanDevice : public Component {
   void assert_desired_(uint32_t now);
   bool apply_dp_(uint8_t dp, bool value);
   std::string timestamp_() const;
+  // Recompute has_pending_writes() from desired_ vs confirmed_.
+  void update_pending_();
 
   TaskHandle_t task_{nullptr};
   QueueHandle_t rx_queue_{nullptr};   // DpUpdate: task -> main loop
@@ -117,6 +118,12 @@ class TuyaLanDevice : public Component {
   std::map<uint8_t, bool> desired_;
   std::map<uint8_t, bool> confirmed_;
   uint32_t last_assert_{0};
+  // Release requests from the main loop. Atomic (not the bounded command queue)
+  // so a handover's "stop controlling this plug" can never be dropped and is
+  // applied even while disconnected. release_bits_[dp>>6] bit (dp&63) marks one
+  // DP to drop from desired_.
+  std::atomic<bool> release_all_pending_{false};
+  std::atomic<uint64_t> release_bits_[4]{};
 #endif
 
   struct Listener {

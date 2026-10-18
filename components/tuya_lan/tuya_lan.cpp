@@ -84,22 +84,17 @@ void TuyaLanDevice::loop() {
 }
 
 void TuyaLanDevice::set_bool_dp(uint8_t dp, bool value) {
-  Command c{Command::SET, dp, value ? 1 : 0};
+  Command c{dp, value ? 1 : 0};
   if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
     ESP_LOGW(TAG, "command queue full, dropping write to DP %u", dp);
 }
 
+// Releases go through atomics, not the bounded queue, so they are never dropped.
 void TuyaLanDevice::release_dp(uint8_t dp) {
-  Command c{Command::CLEAR, dp, 0};
-  if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
-    ESP_LOGW(TAG, "command queue full, dropping release of DP %u", dp);
+  this->release_bits_[dp >> 6].fetch_or(1ULL << (dp & 63));
 }
 
-void TuyaLanDevice::release_all() {
-  Command c{Command::CLEAR_ALL, 0, 0};
-  if (this->tx_queue_ != nullptr && xQueueSend(this->tx_queue_, &c, 0) != pdTRUE)
-    ESP_LOGW(TAG, "command queue full, dropping release-all");
-}
+void TuyaLanDevice::release_all() { this->release_all_pending_.store(true); }
 
 void TuyaLanDevice::task_entry(void *arg) { static_cast<TuyaLanDevice *>(arg)->task_loop(); }
 
@@ -271,6 +266,7 @@ void TuyaLanDevice::disconnect_() {
   this->rx_buf_.clear();
   this->confirmed_.clear();     // plug state is unknown once the link is gone
   this->online_.store(false);   // never report control we no longer have
+  this->update_pending_();      // desired now differs from (empty) confirmed
 }
 
 bool TuyaLanDevice::send_frame_(const proto::Bytes &frame) {
@@ -373,29 +369,34 @@ void TuyaLanDevice::drain_commands_() {
   // backlog built up while offline) never replays stale commands.
   Command c;
   while (xQueueReceive(this->tx_queue_, &c, 0) == pdTRUE) {
-    switch (c.op) {
-      case Command::SET: {
-        bool v = c.value != 0;
-        if (this->desired_.find(c.dp) == this->desired_.end() || this->desired_[c.dp] != v)
-          this->last_assert_ = 0;  // new intent: assert without waiting
-        this->desired_[c.dp] = v;
-        break;
-      }
-      case Command::CLEAR:
-        this->desired_.erase(c.dp);  // stop re-asserting this DP
-        break;
-      case Command::CLEAR_ALL:
-        this->desired_.clear();
-        break;
+    bool v = c.value != 0;
+    if (this->desired_.find(c.dp) == this->desired_.end() || this->desired_[c.dp] != v)
+      this->last_assert_ = 0;  // new intent: assert without waiting
+    this->desired_[c.dp] = v;
+  }
+  // Apply releases after writes, so a handover's release always wins over any
+  // write queued for the same DP in the same window.
+  if (this->release_all_pending_.exchange(false))
+    this->desired_.clear();
+  for (int w = 0; w < 4; w++) {
+    uint64_t bits = this->release_bits_[w].exchange(0);
+    while (bits) {
+      int b = __builtin_ctzll(bits);
+      this->desired_.erase(static_cast<uint8_t>(w * 64 + b));
+      bits &= bits - 1;
     }
   }
+  this->update_pending_();
+}
+
+void TuyaLanDevice::update_pending_() {
+  this->pending_writes_.store(!dps_needing_assert(this->desired_, this->confirmed_).empty());
 }
 
 void TuyaLanDevice::assert_desired_(uint32_t now) {
   if (this->sock_ < 0)
     return;
   auto needing = dps_needing_assert(this->desired_, this->confirmed_);
-  this->pending_writes_.store(!needing.empty());  // exposed via has_pending_writes()
   if (needing.empty())
     return;
   // Re-send any DP the plug has not confirmed at the value we want. Retry at
@@ -438,6 +439,7 @@ void TuyaLanDevice::publish_dps_(const std::string &json) {
     }
     return true;
   });
+  this->update_pending_();  // confirmed_ values may have changed
 }
 
 bool TuyaLanDevice::handle_frame_(const proto::Bytes &frame) {
