@@ -6,6 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-18
+
+### Fixed
+
+- Protocol 3.3: accept an empty-payload frame (a heartbeat or CONTROL ack is only the retcode) instead of dropping it and logging a warning every 10 s; a non-empty frame that fails to decrypt is still rejected.
+- Do not count an empty 3.3 frame as proof the device is alive — its CRC is unkeyed and could be forged on the LAN, which would spoof the `online` sensor; liveness now rides on authenticated or non-empty frames.
+- Make the liveness timeout adaptive to `poll_interval` (`max(30s, 2 × poll_interval + 5s)`) so a long poll interval does not cause false disconnects.
+- Example and README: give the power sensor a distinct name from the switch, and add explicit ids to the Russian README snippet so its all-Cyrillic names do not collide on an empty ASCII object id.
+
 ## [0.1.0] - 2026-10-17
 
 ### Added

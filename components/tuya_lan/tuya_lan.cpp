@@ -125,6 +125,12 @@ void TuyaLanDevice::task_loop() {
     }
 
     uint32_t last_poll = 0, last_hb = 0, last_rx = millis();
+    // Declare the device dead after it misses roughly two polls (never less than
+    // 30 s). With 3.3 empty frames no longer counting as alive (CRC is unkeyed),
+    // liveness rides on the polled status reports, so the window must clear a
+    // couple of poll intervals to avoid false disconnects.
+    const uint32_t liveness_ms =
+        this->poll_interval_ * 2 + 5000 > 30000 ? this->poll_interval_ * 2 + 5000 : 30000;
 
     while (this->sock_ >= 0) {
       const uint32_t now = millis();
@@ -180,8 +186,8 @@ void TuyaLanDevice::task_loop() {
         this->disconnect_();
       }
 
-      if (this->sock_ >= 0 && now - last_rx > 30000) {
-        ESP_LOGW(TAG, "no authenticated data for 30 s, reconnecting");
+      if (this->sock_ >= 0 && now - last_rx > liveness_ms) {
+        ESP_LOGW(TAG, "no authenticated data for %u ms, reconnecting", liveness_ms);
         this->disconnect_();
       }
     }
@@ -418,7 +424,11 @@ bool TuyaLanDevice::handle_frame_(const proto::Bytes &frame) {
   // Any decoded payload that looks like a JSON object may carry DP state.
   if (!d.payload.empty() && d.payload[0] == '{')
     this->publish_dps_(d.payload);
-  return true;  // authenticated frame, device is alive
+  // A 3.3 frame is authenticated only by an unkeyed CRC, so an empty
+  // (retcode-only) frame proves nothing about the sender — do not let it mark
+  // the device alive, or anyone on-path on the LAN could forge liveness. A
+  // non-empty 3.3 frame and every 3.4/3.5 frame (HMAC / GCM) do count.
+  return !(this->version_ == proto::Version::V33 && d.payload.empty());
 }
 
 #else  // !USE_ESP32 — the network path requires FreeRTOS + lwip.

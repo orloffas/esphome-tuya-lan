@@ -192,6 +192,14 @@ def main():
     encode_case("v3.5_dp_query", 3.5, CT.DP_QUERY, session_key=sk35)
     decode_case("v3.5_status_resp", 3.5, CT.DP_QUERY_NEW, {"1": True, "20": 2301}, session_key=sk35)
 
+    # --- 3.3 empty-payload ack (heartbeat / CONTROL ack = retcode only) ---
+    # Must decode OK with an empty payload, not be rejected as a bad key.
+    empty_frame = pack_message(
+        TuyaMessage(3, CT.HEART_BEAT, 0, struct.pack(">I", 0), 0, True, H.PREFIX_55AA_VALUE, False)
+    )
+    fixtures.append({"name": "v3.3_empty_ack", "op": "decode", "version": "33",
+                     "key": hx(KEY), "frame": hx(empty_frame), "expect_json": ""})
+
     # --- standalone crypto KATs ---
     fixtures.append({"name": "crc32_check", "op": "crc32",
                      "data": hx(b"123456789"), "expect_crc": 0xCBF43926})
